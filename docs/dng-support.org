@@ -1,0 +1,90 @@
+#+title: Spectral Lab — DNG Support
+#+author: Andrey Pudov
+#+date: <2026-09-30 Wed>
+
+* Input
+
+** Supported
+
+- Classic TIFF, little- and big-endian; the main image is the largest IFD
+  with =NewSubFileType= 0 and a CFA or LinearRaw photometric
+  interpretation, found in IFD 0, its chain or SubIFDs (up to depth 3).
+- CFA: 2x2 Bayer patterns (RGGB, BGGR, GRBG, GBRG), =CFAPlaneColor= R,G,B,
+  rectangular =CFALayout=.
+- LinearRaw: 3 samples per pixel.
+- Uncompressed, 8 to 16 bits per sample (bit-packed, rows byte aligned), and
+  lossless JPEG (compression 7) including multi-component tiles, predictors
+  1-7, point transform and whole-row restart intervals.
+- Strips and tiles, edge tiles, parallel decoding.
+- =ActiveArea= (image cropped at read time), =LinearizationTable=,
+  =BlackLevelRepeatDim=, =BlackLevel=, =BlackLevelDeltaH/V=, =WhiteLevel=.
+- Color: =ColorMatrix1/2=, =CameraCalibration1/2=, =ForwardMatrix1/2=,
+  =CalibrationIlluminant1/2=, =AnalogBalance=, =AsShotNeutral=,
+  =AsShotWhiteXY=.
+- =DefaultScale=, =DefaultCropOrigin/Size=, =BestQualityScale=,
+  =BaselineExposure=, =BaselineNoise=, =BaselineSharpness=,
+  =LinearResponseLimit=, =OpcodeList1/2/3=, EXIF IFD (MakerNote and the
+  interoperability IFD are dropped because they contain offsets).
+
+** Not supported (clear error message)
+
+| Input                                   | Typical source                         |
+|-----------------------------------------+----------------------------------------|
+| X-Trans and other non-2x2 CFA patterns  | Fujifilm X series                      |
+| Floating point data                     | Lightroom HDR merges                   |
+| JPEG XL compression (52546)             | DNG 1.7, recent Lightroom panoramas    |
+| Lossy DNG (compression 34892)           | "Lossy compressed" DNG Converter option |
+| Deflate compression                     | Float DNGs                             |
+| Monochrome or 4-color sensors           | Leica Monochrom, CMYG                  |
+| BigTIFF                                 | —                                      |
+
+** Ignored (with a warning)
+
+=OpcodeList1= and =OpcodeList2= (raw-stage operations such as the lens
+shading =GainMap= used by phones) are not applied yet. =MaskedAreas=,
+=BayerGreenSplit=, =NoiseProfile= and DNG 1.6 triple-illuminant tags are
+ignored.
+
+* Output
+
+** Structure
+
+#+begin_src text
+IFD 0     256 px 8-bit sRGB thumbnail (NewSubFileType 1, PreviewColorSpace sRGB)
+          + all camera-level DNG tags
+  SubIFD  main image: LinearRaw, 3 x 16 bit, 256x256 tiles,
+          lossless JPEG (predictor 1, 3 components) or uncompressed
+  EXIF    copied entries of the input EXIF IFD
+#+end_src
+
+Without a thumbnail (=--no-thumbnail=) the main image is stored in IFD 0.
+
+** Tags written
+
+| Tag                             | Value                                       |
+|---------------------------------+---------------------------------------------|
+| DNGVersion / DNGBackwardVersion | 1.4.0.0 / 1.2.0.0 (1.3.0.0 with opcodes)    |
+| UniqueCameraModel               | Spectral Lab Linear ProPhoto                |
+| Make, Model                     | from input (lens profiles, catalogs)        |
+| ColorMatrix1                    | XYZ D50 to linear ProPhoto                  |
+| ForwardMatrix1                  | linear ProPhoto to XYZ D50                  |
+| CalibrationIlluminant1          | 23 (D50)                                    |
+| AsShotNeutral                   | 1, 1, 1                                     |
+| WhiteLevel                      | 65535 (black level 0)                       |
+| ProfileName                     | Spectral Lab IR (embed policy: allow copy)  |
+| Baseline* , Orientation, crop   | from input                                  |
+| OpcodeList3                     | from input                                  |
+| Software                        | Spectral Lab 0.1.0                          |
+
+Rationals use a denominator of 10000, as Adobe's writers do.
+
+* Compatibility notes
+
+- Verified: LibRaw 0.22 decodes both compression modes to identical pixels
+  and reads the tags (LinearRaw, white 65535, as-shot WB 1,1,1); tifffile
+  reads the thumbnail.
+- Not yet verified: Lightroom / Camera Raw, Capture One, Darktable (via
+  RawSpeed), Affinity Photo. Adobe's =dng_validate= from the DNG SDK should
+  be run on sample outputs.
+- Lightroom's AI Denoise and similar tools need mosaic data and are not
+  expected to work on linear DNGs.

@@ -1,0 +1,71 @@
+#+title: Spectral Lab — Testing and Validation
+#+author: Andrey Pudov
+#+date: <2026-09-30 Wed>
+
+* Unit and integration tests
+
+#+begin_src sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
+#+end_src
+
+103 tests in two executables (=ircore_test=, =ircli_test=). No test needs
+external files: inputs are synthesized by =tests/support/synthetic.cc=.
+
+| Suite                  | Covers                                                                   |
+|------------------------+--------------------------------------------------------------------------|
+| =color_test=           | Inversion, Bradford, ProPhoto and ICC sRGB matrices, illuminant table    |
+| =tiff_test=            | Writer/parser round trip, big-endian, bad headers, IFD loops, bad offsets |
+| =ljpeg_test=           | Round trips: 1-4 components x predictors 1-7 x 8/12/14/16 bits, +-32768 differences, truncation, lossy rejection, 500 corruptions |
+| =dng_test=             | CFA and LinearRaw round trips (both compressions, edge tiles, thumbnail, EXIF, opcodes), hand-crafted big-endian 12-bit packed DNG with odd ActiveArea and linearization, 1500 corrupted files, atomic write |
+| =analysis_test=        | Black level patterns and deltas, clipped statistics, regions, gray world, filter classes and confidence |
+| =demosaic_test=        | Flat fields and linear ramps reproduced exactly for all four Bayer phases |
+| =normalization_test=   | Neutral to D50 (color and forward matrix, calibration), exact white for every mapping, sRGB red to blue swap, gamut mapping |
+| =processing_test=      | End to end: neutral stays gray, false color hue swap, neutral highlights, all WB modes, auto mapping, output metadata, LinearRaw input, thread independence, =process_file= |
+| =cli_test=             | Usage errors, option parsing, single file, batch, overwrite protection, name collisions, per-file failures, =--analyze= |
+
+* Sanitizers
+
+#+begin_src sh
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DSPECTRAL_LAB_SANITIZE=ON
+cmake --build build-asan
+ctest --test-dir build-asan --output-on-failure
+#+end_src
+
+The full suite, including the corruption loops, passes under AddressSanitizer
+and UndefinedBehaviorSanitizer.
+
+* Validation with real files and an independent decoder
+
+The scripts in =scripts/= are development tools and need Python with
+=rawpy= (LibRaw), =numpy=, =tifffile= and =imageio=:
+
+#+begin_src sh
+python3 -m venv .venv && .venv/bin/pip install rawpy numpy tifffile imageio
+#+end_src
+
+1. =scripts/raw2dng.py in.cr2 in.dng [<|>]= makes a CFA DNG from a camera raw
+   file (LibRaw decodes, tifffile writes; =>= writes big-endian).
+2. =build/spectrallab in.dng out.dng=
+3. =scripts/libraw_check.py out.dng= decodes the output with LibRaw and
+   renders a neutral PNG for inspection.
+
+Results of 2026-09-30 with the Rob Shea IR samples are in
+[[file:overview.org][the overview]]. Additional checks made:
+
+- LibRaw decodes the lossless JPEG output bit-identically to the
+  uncompressed output (validates the encoder independently).
+- The big-endian DNG produced by tifffile is read correctly.
+- X-Trans input is rejected with a clear message.
+
+Sample raw files are not part of the repository (size, copyright); they can
+be downloaded from https://www.robsheaphotography.com/download/infrared-sample-raw-images/.
+
+* Still to do
+
+- Open outputs in Lightroom, Capture One, Darktable, Affinity Photo.
+- Run Adobe =dng_validate= on outputs.
+- Test inputs made by Adobe DNG Converter (tiled lossless JPEG with 2
+  components, ActiveArea, OpcodeList3) and by cameras that write DNG natively.
+- CI builds for Windows (MSVC) and Linux (GCC), x86_64 and ARM64.

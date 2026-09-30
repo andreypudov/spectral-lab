@@ -1,0 +1,76 @@
+#+title: Spectral Lab — Command Line
+#+author: Andrey Pudov
+#+date: <2026-09-30 Wed>
+
+* Synopsis
+
+#+begin_src text
+spectrallab [options] <input.dng> <output.dng>
+spectrallab [options] --output-dir <dir> <input.dng>...
+spectrallab [options] <input.dng>... <existing-dir>
+spectrallab --analyze [options] <input.dng>...
+#+end_src
+
+* Options
+
+| Option                   | Values                                            | Default         |
+|--------------------------+---------------------------------------------------+-----------------|
+| =--wb <mode>=            | =auto=, =as-shot=, =area=X,Y,W,H=, =neutral=R,G,B= | =auto=          |
+| =--filter <type>=        | =auto=, =590=, =665=, =720=, =850=, =full-spectrum= | =auto=          |
+| =--mapping <mode>=       | =auto=, =native=, =false-color=, =monochrome=      | =auto=          |
+| =--compression <type>=   | =lossless-jpeg=, =none=                            | =lossless-jpeg= |
+| =--no-thumbnail=         | do not embed the sRGB preview                      |                 |
+| =-o=, =--output-dir <dir>= | batch output directory (created if missing)      |                 |
+| =-f=, =--force=          | overwrite existing outputs                         |                 |
+| =--threads <n>=          | 1 to 1024                                          | all cores       |
+| =--analyze=              | report only, write nothing                         |                 |
+| =-q=, =--quiet=          | print errors only                                  |                 |
+| =-h=, =--help=, =--version= |                                                 |                 |
+
+Options accept =--name value= and =--name=value=; =--= ends option parsing.
+Aliases: =590nm= etc., =full=, =mono=, =ljpeg=.
+
+=area= coordinates are pixels of the active area, before orientation is
+applied. =neutral= is camera RGB, as printed by =--analyze=.
+
+* Behaviour
+
+- Batch output names are =<dir>/<input stem>.dng=. Two inputs that map to
+  the same output name are rejected before any work starts.
+- Without =--force=, the run stops before processing if any output exists.
+  An input is never overwritten, not even with =--force=.
+- Each file is processed independently; a failing file is reported and the
+  batch continues.
+- Exit codes: 0 success, 1 at least one file failed, 2 usage error.
+
+* Report
+
+#+begin_src text
+$ spectrallab 720nm.dng out/720nm.dng
+720nm.dng -> out/720nm.dng
+  camera:        Converted 720nm.raf
+  size:          8280x6208 (CFA)
+  white balance: auto (neutral 1.0000,0.6049,0.2990)
+  filter:        720 (detected, high confidence; balance 0.299, chroma spread 0.169)
+  mapping:       false-color
+  camera matrix: illuminant 21
+  clipped:       0.00%
+#+end_src
+
+=camera matrix= shows the DNG calibration illuminant used (21 = D65) and
+whether a forward matrix was available. Warnings follow the report.
+
+* Recipes
+
+Reproducible white balance for a series shot under the same light:
+
+#+begin_src sh
+spectrallab --analyze reference.dng        # note the neutral
+spectrallab --wb neutral=1,0.6049,0.299 -o out/ *.dng
+#+end_src
+
+White balance from a known foliage area:
+
+#+begin_src sh
+spectrallab --wb area=1200,800,300,200 in.dng out.dng
+#+end_src

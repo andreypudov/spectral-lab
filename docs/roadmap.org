@@ -1,0 +1,49 @@
+#+title: Spectral Lab — Roadmap
+#+author: Andrey Pudov
+#+date: <2026-09-30 Wed>
+
+* Iteration 1 (done): prove the idea
+
+Core engine and CLI; see [[file:overview.org][overview]].
+
+* Next: validate in editors
+
+1. Open outputs in Lightroom Classic / Camera Raw, Capture One, Darktable,
+   Affinity Photo; check white balance range, profile handling (embedded
+   profile only), thumbnail, orientation, crop, lens corrections.
+2. Run =dng_validate= (Adobe DNG SDK).
+3. Collect IR samples per filter (590, 665, 720, 850, full spectrum) from
+   several sensors, ideally converted with Adobe DNG Converter, and
+   recalibrate filter detection with =--analyze=.
+
+* Iteration 2 candidates
+
+- *Desktop application* (Qt 6 Widgets): input files, output folder, preset,
+  process button; advanced panel with WB mode, filter, camera mode, mapping.
+  Previews can use =ircore::render_preview=; the reference area for
+  =--wb area= should be picked on the preview.
+- *Processing presets* (named option sets) shared by CLI and GUI.
+- *Camera profiles* (profile-based mode): per camera + filter data such as a
+  reference neutral and a correction matrix, with the universal mode as
+  fallback. Needs a file format and calibration captures.
+- *OpcodeList2 GainMap* support (lens shading of phones and some cameras).
+- *Mosaic-preserving output* (CFA DNG with white balance applied to the raw
+  data): keeps editor demosaicing and AI denoise, but cannot apply channel
+  mapping. Worth offering for =native= mapping.
+- *X-Trans* support (needs a different demosaic).
+- *TIFF output* (spec: optional, future).
+- Better auto white balance for scenes without dominant foliage (for
+  example a bright-pixel or foliage-segmentation estimator).
+
+* Open questions
+
+- Should the default mapping be =auto= (current: one-click false color) or
+  =native= (most conservative)? The spec lists mapping as an advanced
+  option and a "processing preset" on the main screen; presets may settle it.
+- Should the output keep more highlight headroom (currently colors are
+  clipped where the neutral clips)?
+- Linear DNG files are about 3x larger than mosaic DNGs (a 51 MP file gives
+  about 190 MB with lossless JPEG). Is that acceptable, or should the mosaic
+  mode become the default for =native=?
+- The batch section of the specification is cut off after its heading; the
+  current batch interface (=--output-dir=, keep file names) is an assumption.

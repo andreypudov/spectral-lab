@@ -1,0 +1,189 @@
+#+title: Spectral Lab — Processing Pipeline
+#+author: Andrey Pudov
+#+date: <2026-09-30 Wed>
+
+* Why infrared breaks editors
+
+A DNG describes its colors with camera matrices calibrated under visible
+light (typically Standard A and D65) and records the scene white as
+=AsShotNeutral=. For an IR photograph that neutral is extreme, for example
+camera RGB (1.00, 0.60, 0.21) for a 590 nm conversion. Mapped through the
+visible-light matrices it corresponds to a white point far below the 2000 K
+minimum of editor sliders, so the editor cannot neutralize the image. The
+usual workaround is a custom DCP profile with a shifted calibration, which
+is what Spectral Lab removes.
+
+* Pipeline
+
+#+begin_src text
+Input DNG
+   |  read_dng: decode, crop to ActiveArea
+   v
+Linearization          LinearizationTable, BlackLevel (+deltas), WhiteLevel
+   v
+Scene statistics       2x2 blocks on a fixed grid (max 2^20), clipped removed
+   v
+White balance          -> camera neutral n (largest component 1)
+   v
+Filter identification  -> filter type, recommended channel mapping
+   v
+Balance + clip         b = min(v / n_c, 1)       per CFA color
+   v
+Demosaic               Malvar-He-Cutler 5x5, mirrored borders
+   v
+Color transform        3x3 M: balanced camera RGB -> linear ProPhoto
+   v                   (camera matrices at daylight + channel mapping)
+Gamut mapping          luminance-preserving into [0, 1]
+   v
+Output DNG             16-bit LinearRaw, lossless JPEG tiles, thumbnail
+#+end_src
+
+* Linearization
+
+For stored value =s= at row =r=, column =c=, sample =k=:
+
+#+begin_src text
+lin   = LinearizationTable[min(s, size - 1)]      (or s without a table)
+black = BlackLevel[r % Rr][c % Rc][k] + DeltaH[c] + DeltaV[r]
+v     = (lin - black) / (WhiteLevel[k] - black)
+#+end_src
+
+The black level pattern and deltas are relative to the ActiveArea, the CFA
+pattern to the stored image (its phase follows the crop, as in RawSpeed).
+
+* White balance normalization (Feature 1)
+
+The target is a camera neutral =n=: the camera RGB of a surface that should
+render white (in IR practice, sunlit foliage).
+
+| Mode        | CLI                  | Source of =n=                                                  |
+|-------------+----------------------+----------------------------------------------------------------|
+| Auto IR     | =--wb auto=          | Gray world over the frame (default)                            |
+| As shot     | =--wb as-shot=       | =AsShotNeutral= (or =AsShotWhiteXY= via the daylight matrix)    |
+| Reference   | =--wb area=X,Y,W,H=  | Gray world over a user rectangle (active-area pixel coordinates) |
+| Explicit    | =--wb neutral=R,G,B= | Given values, for reproducible batches                         |
+
+Gray world uses the ratio of channel sums over the usable blocks: unclipped
+(no sample at or above 0.98), and brighter than both the noise floor (0.002)
+and the 5th percentile. Summing (rather than averaging ratios) weights bright
+areas, which in IR are foliage. =n= is normalized to a largest component of
+1; gains above 1000x are rejected.
+
+* Filter identification (Feature 2)
+
+Two features are computed from the same statistics with the gray-world
+neutral (independent of the chosen WB mode):
+
+- /channel balance/ = min(n) / max(n): how similar the raw channel
+  responses are. All CFA dyes are nearly transparent above ~800 nm.
+- /chroma spread/: robust standard deviation of the balanced
+  log-chromaticity, sqrt(s(ln R/G)^2 + s(ln B/G)^2), with s = (p90 - p10) /
+  2.563. It measures how much visible-light color the filter lets through.
+
+Classifier (=src/ircore/internal/analysis.h=):
+
+| Class  | Rule                                  |
+|--------+---------------------------------------|
+| 850 nm | balance >= 0.60 and spread <= 0.05    |
+| 720 nm | spread <= 0.20                        |
+| 665 nm | spread <= 0.28                        |
+| 590 nm | otherwise                             |
+
+Confidence is /high/ when the spread is more than 15% (in log terms) away
+from every threshold (and, for near-monochrome scenes, the balance from its
+threshold). Low confidence produces a warning.
+
+Status and caveats:
+
+- The first classifier used channel balance for all classes and put a real
+  720 nm file (balance 0.30) into 665 nm. Balance depends mainly on the
+  sensor's blue dye, while spread depends on the filter, so spread is now the
+  main feature.
+- The thresholds are fitted to *two* real files (590 nm: 0.33, 720 nm: 0.17)
+  and synthetic data. They are a starting point, not a calibration.
+- Spread also depends on the scene (a frame of only foliage has little
+  color). Full spectrum cannot be told apart from 590 nm by these features
+  and is never auto-detected.
+- =--analyze= prints both features, so a calibration set can be collected
+  without writing files.
+
+The detected filter selects the /normalization model/, which in iteration 1
+is the channel mapping used by =--mapping auto=:
+
+| Filter        | Auto mapping |
+|---------------+--------------|
+| 590, 665, 720 | false color  |
+| 850           | monochrome   |
+| full spectrum | native       |
+
+* Color normalization (Feature 4, Feature 3 "universal")
+
+Every color DNG carries =ColorMatrix1= (XYZ to camera), so the universal
+mode works for any source. The pipeline pretends the scene was lit by
+daylight and that the IR neutral is its white:
+
+1. Pick the calibration set whose illuminant is closest to D65 in mired
+   (IR is shot in daylight; the daylight matrix describes the sensor best).
+2. Camera space is =AnalogBalance * CameraCalibration * reference space=;
+   convert =n= to the reference space: =n_ref = inv(AB*CC) * n=.
+3. Camera to XYZ D50 such that the camera neutral becomes D50 white:
+   - with =ForwardMatrix=:
+     =C = FM * diag(1/n_ref) * inv(AB*CC)=
+   - otherwise, with illuminant white =W= and =n_W = CM * W=:
+     =C = Bradford(W -> D50) * inv(CM) * diag(n_W) * diag(1/n_ref) * inv(AB*CC)=
+4. Balanced camera RGB to XYZ: =B = C * diag(n)=, so =B * (1,1,1) = D50=.
+5. Output =M = XYZ_D50->ProPhoto * B= (native), then each row of =M= is
+   scaled so that =M * (1,1,1) = (1,1,1)= exactly (removes numeric drift).
+
+Without any color matrix the camera is treated as linear sRGB, with a
+warning.
+
+This is a technical correction, not a look: the IR neutral becomes exactly
+neutral, and the remaining colors are those the camera's own daylight matrix
+produces, which is the basis of the conventional IR workflow. Reducing
+sensor-specific color differences further needs per-camera data (profile
+mode, not implemented).
+
+** Highlight handling
+
+Before demosaicing, each balanced sample is clipped at 1, the level where the
+neutral saturates. Clipped highlights therefore render white instead of
+magenta, at the cost of some color in very bright colored areas (the dcraw
+"clip" strategy).
+
+** Gamut mapping
+
+After =M=, colors outside [0, 1] are moved towards the gray of equal
+ProPhoto luminance until they fit: negative components and components above
+1 are fixed without changing luminance or hue. Luminance above 1 becomes
+white, below 0 black.
+
+* Channel mapping (Feature 5)
+
+| Mapping       | Transform                                                         |
+|---------------+-------------------------------------------------------------------|
+| native        | =M= as above; no channel changes                                  |
+| false color   | red/blue swap in sRGB primaries: =P * S709 * Swap * inv(S709) * B= |
+| monochrome    | every output channel = mean of the balanced camera channels       |
+
+- The false color swap is done in linear sRGB primaries (D50 adapted, as
+  ICC does), which is exactly the Photoshop channel mixer swap in an sRGB
+  document, because per-channel tone curves commute with a channel
+  permutation. The swap is folded into the single 3x3 matrix, so no clipping
+  happens between steps.
+- Monochrome uses equal weights of the balanced channels instead of
+  luminance: in IR all channels carry similar signal, and equal weights
+  minimize noise (a luminance row derived from the camera matrix has
+  negative weights that amplify noise).
+
+All mappings keep the neutral exactly neutral.
+
+* Output encoding
+
+- 16-bit LinearRaw, black 0, white 65535; 1.0 is the level where the neutral
+  clips.
+- =BaselineExposure=, =BaselineNoise=, =BaselineSharpness=, =Orientation=,
+  =DefaultCrop*=, =DefaultScale=, =BestQualityScale=, =OpcodeList3=
+  (lens corrections applied after demosaicing) and EXIF are carried over.
+- The 256 px thumbnail is rendered with the same data (ProPhoto to sRGB,
+  =BaselineExposure=, sRGB transfer curve).

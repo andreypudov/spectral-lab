@@ -1,0 +1,70 @@
+#+title: Spectral Lab — Overview of Iteration 1
+#+author: Andrey Pudov
+#+date: <2026-09-30 Wed>
+
+* Goal of iteration 1
+
+Prove the idea from the product specification
+(=~/notebook/Articles/Ideas/infrared-white-balance-normalization.org=):
+an infrared DNG can be turned into a DNG that an editor opens with a neutral,
+adjustable white balance and, optionally, the classic red/blue false color
+swap already applied, without custom profiles or Photoshop.
+
+In scope:
+
+- =ircore=: engine with no UI dependencies (DNG I/O, white balance
+  normalization, filter detection, color normalization, channel mapping).
+- =spectrallab=: command line on top of the same Core API (single file,
+  batch, analysis).
+- Tests, sanitizer builds and validation against an independent decoder.
+
+Out of scope for now (see [[file:roadmap.org][roadmap]]): Qt desktop application, camera
+profile files, presets, TIFF output, raw-stage opcodes.
+
+* Status
+
+| Feature (spec)                         | Status                                             |
+|----------------------------------------+----------------------------------------------------|
+| 1. IR white balance normalization      | Done: auto, as-shot, reference area, explicit      |
+| 2. Filter type detection               | Done, heuristic; fitted to two real files only     |
+| 3. Camera profile support: universal   | Done (uses the matrices embedded in every DNG)     |
+| 3. Camera profile support: profiles    | Not started; falls back to universal               |
+| 4. Color normalization                 | Done: daylight camera matrices, gamut mapping      |
+| 5. Channel mapping                     | Done: native, false color, monochrome, auto        |
+| CLI single file / batch / scripting    | Done                                               |
+| Desktop UI (Qt 6)                      | Not started                                        |
+| Input: DNG                             | Bayer CFA and LinearRaw, uncompressed or lossless JPEG |
+| Output: linear DNG                     | Done, lossless JPEG compressed, sRGB thumbnail     |
+
+* Results on real infrared files
+
+The sample raw files published by Rob Shea for testing IR processing
+(https://www.robsheaphotography.com/download/infrared-sample-raw-images/) were
+converted to DNG with =scripts/raw2dng.py= and processed with default
+options. The outputs were decoded and rendered by LibRaw, which is independent
+of this code base.
+
+| File                          | Detected filter      | Balance | Spread | Result                                      |
+|-------------------------------+----------------------+---------+--------+---------------------------------------------|
+| Canon SL1, 590 nm conversion  | 590, high confidence |   0.210 |  0.330 | Blue sky and water, cream foliage           |
+| Fuji GFX 50S, 720 nm filter   | 720, high confidence |   0.299 |  0.169 | Teal sky, peach foliage                     |
+| Fuji X-T2, 550 nm (X-Trans)   | —                    |       — |      — | Rejected: X-Trans CFA is not supported      |
+
+The false color renderings match the reference JPEGs the author produced with
+the conventional workflow (white balance plus a Photoshop red/blue channel
+swap), in sky, water and foliage tones. The 51 MP GFX file is processed in
+about 0.6 s on a 10-core Apple Silicon machine with about 1 GB peak memory.
+
+The first version of filter detection classified the 720 nm file as 665 nm,
+which led to the current classifier based on chroma spread (see
+[[file:processing-pipeline.org][processing pipeline]]). Two files are not a calibration; more samples
+are the most important input for the next iteration.
+
+* What has not been verified
+
+- Opening the output in Lightroom, Capture One, Darktable or Affinity Photo.
+  No commercial editor was available in the development environment; LibRaw
+  and tifffile were used instead. This is the first thing to check.
+- DNG files written by Adobe DNG Converter or by cameras (the lossless JPEG
+  decoder is tested by round trips and fuzzing, not yet on such files).
+- Windows and Linux builds (only macOS / Apple Clang 21 was built).

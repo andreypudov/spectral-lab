@@ -1,0 +1,121 @@
+#+title: Spectral Lab — Architecture
+#+author: Andrey Pudov
+#+date: <2026-09-30 Wed>
+
+* Components
+
+#+begin_src text
++-------------------+      +-------------------+
+|  spectrallab CLI  |      | Desktop UI (next) |
+|  (ircli)          |      | (Qt 6, planned)   |
++-------------------+      +-------------------+
+          |                          |
+          v                          v
++----------------------------------------------+
+|  Core API: ircore/processing.h               |
+|  analyze, normalize, analyze_file,           |
+|  process_file                                |
++----------------------------------------------+
+          |
+          +-- DNG layer      ircore/dng.h        (TIFF, lossless JPEG)
+          +-- Analysis       ircore/analysis.h   (linearize, WB, filter)
+          +-- Color engine   ircore/color.h      (matrices, illuminants)
+          +-- Preview        ircore/preview.h    (sRGB thumbnail)
+#+end_src
+
+- *ircore* (static library, =src/ircore=): the engine. Only the C++ standard
+  library; no UI or third-party dependencies. Errors are returned as
+  =std::expected<T, ircore::Error>= (=ircore::Result<T>=); exceptions
+  (allocation failures) are converted at the API boundary.
+- *ircli_core* (static library, =src/ircli=): argument parsing, job
+  planning and reporting; =ircli::run(arguments, out, err)= is fully
+  testable without a process.
+- *spectrallab* (executable): a thin =main= around =ircli::run=.
+
+* Module layout
+
+| Public header             | Implementation                  | Responsibility                                  |
+|---------------------------+---------------------------------+-------------------------------------------------|
+| =ircore/error.h=          | =error.cc=                      | Error codes, =Result<T>=                        |
+| =ircore/image.h=          | =image.cc=                      | Raw image, Bayer pattern, 8-bit RGB             |
+| =ircore/color.h=          | =color.cc=                      | 3x3 math, Bradford, ProPhoto/sRGB, illuminants  |
+| =ircore/dng.h=            | =dng_reader.cc=, =dng_writer.cc= | DNG read/write, metadata model                  |
+| =ircore/options.h=        | =options.cc=                    | Processing options and their names              |
+| =ircore/analysis.h=       | =analysis.cc=                   | Linearization, statistics, WB, filter detection |
+| =ircore/processing.h=     | =processing.cc=                 | Core API: the normalization pipeline            |
+| =ircore/preview.h=        | =preview.cc=                    | Thumbnail rendering                             |
+| (internal) =tiff.h=       | =tiff.cc=                       | Bounds-checked TIFF parser, TIFF writer         |
+| (internal) =ljpeg.h=      | =ljpeg.cc=                      | Lossless JPEG (ITU T.81 process 14) codec       |
+| (internal) =demosaic.h=   | =demosaic.cc=                   | Malvar-He-Cutler Bayer interpolation            |
+| (internal) =normalization.h= | =processing.cc=              | Camera and output transforms, gamut mapping     |
+| (internal) =parallel.h=   | header only                     | Deterministic row/tile parallelism              |
+
+Internal headers live in =src/ircore/internal= and are not installed; tests
+include them to test building blocks directly.
+
+* Design decisions
+
+** Own DNG/TIFF and lossless JPEG implementation instead of libtiff/LibRaw
+
+- DNG needs many private tags that libtiff has to be taught, and libtiff
+  cannot decode DNG lossless JPEG (compression 7) anyway.
+- LibRaw would bring a large dependency and a license review for a feature
+  set (camera raw decoding) that the product explicitly defers.
+- The needed subset is small (about 2400 lines) and fully under test,
+  including corrupted-input fuzzing under ASan/UBSan.
+- Correctness is cross-checked against LibRaw during development only
+  (=scripts/=), not at run time.
+
+** Output is a linear (demosaiced) DNG in linear ProPhoto RGB
+
+The spec asks for linear DNG. Demosaicing is required anyway for channel
+mapping, because the classic red/blue swap operates on rendered RGB, not on
+the sensor mosaic.
+
+The output camera space is linear ProPhoto RGB (ColorMatrix1 = XYZ D50 to
+ProPhoto, ForwardMatrix1 = ProPhoto to XYZ D50, CalibrationIlluminant1 = D50,
+AsShotNeutral = 1,1,1). Reasons:
+
+- The editor sees a well-behaved "camera" whose neutral is exactly D50, so
+  the white balance opens around 5000 K / tint 0 and every slider has range.
+  This is the core fix for the IR white balance problem.
+- ProPhoto is wide enough that the IR color transform rarely leaves the
+  gamut, and it is the working space of Adobe's raw pipeline.
+- =UniqueCameraModel= is set to "Spectral Lab Linear ProPhoto" so that no
+  editor applies the real camera's visible-light profile to this data.
+
+Trade-off: editors cannot use their own demosaicing, and some raw-only tools
+(for example AI denoise features that require mosaic data) may not work on
+linear DNGs. A mosaic-preserving output mode is listed in the [[file:roadmap.org][roadmap]].
+
+** Deterministic processing
+
+- Statistics are collected on a fixed subsampling grid, never randomly.
+- Parallel work is split into disjoint rows/tiles; results do not depend on
+  the thread count (covered by a test).
+- White balance is estimated per image (auto modes). For consistent batches,
+  the neutral printed by =--analyze= can be passed to all files with
+  =--wb neutral=R,G,B=.
+
+** Safety of file operations
+
+- Outputs are written to a temporary file in the destination directory and
+  renamed into place; a failed run never leaves a partial DNG.
+- The engine refuses to write over its input; the CLI refuses to overwrite
+  any existing file without =--force= and checks all outputs before the first
+  file is processed; batch name collisions are rejected up front.
+
+** Robustness against malformed input
+
+All offsets and counts are checked before use; IFD loops, excessive IFD
+counts, oversized images (more than 2^30 samples) and truncated lossless JPEG
+streams are rejected with an error. Entries pointing outside the file are
+ignored rather than trusted.
+
+* Build conventions
+
+The project follows the =cpp-cmake-prod= template: CMake 4.4, C++23 without
+extensions, =-Wall -Wextra -Wpedantic -Werror=, LLVM clang-format style,
+GoogleTest v1.18.0 via FetchContent, one =CMakeLists.txt= per component.
+Added on top of the template: =SPECTRAL_LAB_SANITIZE= (ASan + UBSan) and
+the =Threads= dependency.

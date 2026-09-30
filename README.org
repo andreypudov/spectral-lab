@@ -1,0 +1,83 @@
+#+title: Spectral Lab
+#+author: Andrey Pudov
+#+date: <2026-09-30 Wed>
+
+Infrared DNG in, editor-ready DNG out.
+
+Spectral Lab converts infrared raw files (DNG) into linear DNG files that open
+in Lightroom, Capture One, Darktable and similar editors with a neutral white
+balance: no custom camera profiles, no white balance hacks, no Photoshop
+channel swaps. It is not a photo editor.
+
+This is iteration 1, a proof of concept: the core engine (=ircore=) and the
+command line (=spectrallab=). The Qt desktop application is planned next.
+
+* Documentation
+
+- [[file:docs/overview.org][Overview]]: scope of iteration 1, status and results on real IR files
+- [[file:docs/architecture.org][Architecture]]: components, module layout, design decisions
+- [[file:docs/processing-pipeline.org][Processing pipeline]]: the white balance, color and mapping math
+- [[file:docs/dng-support.org][DNG support]]: what is read, what is written, compatibility notes
+- [[file:docs/cli.org][Command line]]: usage and options
+- [[file:docs/testing.org][Testing and validation]]: test suite, sanitizers, LibRaw cross-checks
+- [[file:docs/roadmap.org][Roadmap]]: known limitations, open questions, next iterations
+
+* Layout
+
+- =include/= contains public headers of =ircore= (engine) and =ircli= (command line).
+- =src/= contains implementation files and private headers (=internal/=).
+- =tests/= contains GoogleTest suites and synthetic test data generators.
+- =scripts/= contains optional Python tools used for validation.
+- =docs/= contains the project documentation.
+- Each component owns a dedicated =CMakeLists.txt= file.
+
+* Build
+
+Requires CMake 4.4 and a C++23 compiler. The engine has no third-party
+dependencies; GoogleTest is fetched for the tests.
+
+#+begin_src sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+#+end_src
+
+The executable is created at =build/spectrallab=.
+
+* Test
+
+#+begin_src sh
+ctest --test-dir build --output-on-failure
+#+end_src
+
+With AddressSanitizer and UndefinedBehaviorSanitizer:
+
+#+begin_src sh
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DSPECTRAL_LAB_SANITIZE=ON
+cmake --build build-asan
+ctest --test-dir build-asan --output-on-failure
+#+end_src
+
+* Format
+
+With =clang-format= installed, format all C++ source and header files with:
+
+#+begin_src sh
+cmake --build build --target format
+#+end_src
+
+* Run
+
+#+begin_src sh
+./build/spectrallab input.dng output.dng
+./build/spectrallab input.dng output.dng --filter 720 --wb auto --mapping false-color
+./build/spectrallab --output-dir converted/ *.dng
+./build/spectrallab --analyze input.dng
+#+end_src
+
+See [[file:docs/cli.org][docs/cli.org]] for all options.
+
+* Clean
+
+#+begin_src sh
+cmake --build build --target clean
+#+end_src
